@@ -1,87 +1,116 @@
-# Coinbase-Android
+# kaos-ev-scanner-backend
 
-A simple Android client for interacting with Coinbase APIs and demonstrating common flows (authentication, fetching balances, and viewing transactions). This repository contains the Android app source, build configuration, and basic examples to help you get started.
+Production-ready backend for a Coinbase live-data “EV Crypto Scanner” system designed to support a native Android app + widget.
 
-> NOTE: This project is not an official Coinbase product. Use your own API keys and follow Coinbase's official docs and terms of service when interacting with their APIs.
+- **Hosting**: Fly.io
+- **Cache/store**: Upstash Redis (REST)
+- **Realtime market data**: Coinbase Exchange public WebSocket feed (ticker + matches + level2)
+- **Fallback/structure**: Coinbase public REST (products, stats, candles)
+- **API**: Fastify (TypeScript)
+- **Scheduler**: in-process Luxon timezone-safe scheduler (America/Denver)
+- **Notifications**: Firebase Cloud Messaging (FCM) push notifications
 
-## Features
-- OAuth / API key integration (placeholder)
-- Fetch and display account balances
-- List recent transactions
-- Example UI components and networking setup
-- Basic tests (if included in the repo)
+## What this backend does
 
-## Prerequisites
-- Android Studio (Arctic Fox or later recommended)
-- JDK 11+
-- Android SDK matching the project's compileSdkVersion
-- Gradle (the wrapper is included)
-- A Coinbase API key / OAuth credentials (if you plan to call live APIs)
+- Maintains a **tracked universe** of Coinbase spot `*-USD` products:
+  - Always includes `BTC-USD` and `ETH-USD`
+  - Keeps WebSocket subscriptions for the **top N by 24h USD volume** (default `80`), refreshed every 30 minutes
+- Writes canonical market metrics to Upstash Redis under the **required key schema**
+- Runs scans on schedule (09:00 / 12:00 / 16:00 / 20:00 America/Denver) and on-demand via API
+- Produces **exactly one** EV-optimized trade plan result per scan:
+  - `BUY` (execute)
+  - `SETUP FORMING — WAIT` (with readiness score and what’s missing)
+  - `NO TRADE`
+- Sends FCM push notifications when:
+  - `BUY` is issued, or
+  - `SETUP FORMING — WAIT` with readiness score **>= 70**
 
-## Quickstart
+## API
 
-1. Clone the repository
-   ```bash
-   git clone https://github.com/hippiehustle/Coinbase-Android.git
-   cd Coinbase-Android
-   ```
+Public:
+- `GET /health` -> `{ status, uptime, wsConnected, trackedProductsCount }`
+- `GET /scan/latest` -> last scan JSON + formatted text output
 
-2. Open the project in Android Studio
-   - Use "Open" and select the project's root directory.
-   - Let Android Studio sync Gradle and download dependencies.
+Protected (requires `X-API-KEY` header matching `API_KEY` env):
+- `POST /scan/run` -> triggers immediate scan and returns result
+- `POST /device/register` -> `{ token: string }` adds device token
+- `POST /device/unregister` -> `{ token: string }` removes device token
 
-3. Configure API credentials
-   - Create a secure way to store your Coinbase credentials (local `gradle.properties`, encrypted keystore, or Android resources excluded from VCS).
-   - Example `gradle.properties` entries (do NOT commit secrets):
-     ```
-     COINBASE_API_KEY="your_api_key_here"
-     COINBASE_API_SECRET="your_api_secret_here"
-     ```
-   - Update the app's configuration code or BuildConfig usage to read these values at build/runtime.
+## Environment variables
 
-4. Build and run
-   - Select a device or emulator and Run from Android Studio.
-   - If using APIs, ensure the device/emulator has network access and your credentials are configured.
+Required:
+- `NODE_ENV`
+- `PORT`
+- `API_KEY`
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+- `FCM_SERVER_KEY`
 
-## Configuration examples
-- Networking: Retrofit / OkHttp (example) — update base URL and interceptors as needed.
-- OAuth: Follow Coinbase's OAuth docs to obtain client ID/secret and redirect URIs.
-- Environment: Use build flavors or resource overlays to separate dev/staging/prod settings.
+Optional:
+- `COINBASE_WS_URL` (default `wss://ws-feed.exchange.coinbase.com`)
+- `COINBASE_REST_BASE` (default `https://api.exchange.coinbase.com`)
+- `LIQ_SPREAD_BPS_MAX` (default `50`)
+- `LIQ_DEPTH_USD_MIN` (default `50000`)
+- `TRACK_TOP_N` (default `80`)
 
-## Testing
-- Run unit tests from Android Studio (Gradle > test tasks) or via command line:
-  ```bash
-  ./gradlew test
-  ```
-- UI tests (if present) can be run with:
-  ```bash
-  ./gradlew connectedAndroidTest
-  ```
+Local dev convenience:
+- Create `.env` (do not commit) with the above values.
 
-## Contributing
-Contributions are welcome. Please follow these steps:
-1. Fork the repository.
-2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Commit your changes with clear messages.
-4. Open a pull request describing the change and rationale.
+## Setup (local)
 
-Guidelines:
-- Add or update tests for new logic.
-- Keep API keys and secrets out of commits.
-- Follow existing code style and lint rules.
+1) Install deps
 
-## Troubleshooting
-- Build errors: ensure Android SDK and required platforms are installed.
-- Network/API errors: verify credentials, API permissions, and network connectivity.
-- If unsure, open an issue with logs and reproduction steps.
+```bash
+npm install
+```
 
-## License
-See the LICENSE file in this repository for license details. If no license is present, assume "All rights reserved" and contact the repository owner for permission before reusing code.
+2) Run in dev mode
 
-## Acknowledgements
-- Coinbase API docs: https://docs.cloud.coinbase.com/
-- Open-source libraries used (e.g., Retrofit, OkHttp, Glide) — check the project dependencies for details.
+```bash
+npm run dev
+```
 
-If you'd like, I can:
-- Tailor the README to the exact modules and packages in this repo (I can inspect the code and generate section specifics).
-- Add badges, examples, or expand configuration and security guidance.
+3) Run tests
+
+```bash
+npm test
+```
+
+4) Build + run production
+
+```bash
+npm run build
+npm start
+```
+
+## Upstash + Fly.io setup
+
+1) Create an Upstash Redis database and copy:
+- `UPSTASH_REDIS_REST_URL`
+- `UPSTASH_REDIS_REST_TOKEN`
+
+2) Create an FCM legacy server key:
+- Firebase Console → Project Settings → Cloud Messaging → **Server key**
+
+3) Set Fly secrets (example)
+
+```bash
+fly secrets set API_KEY="..." UPSTASH_REDIS_REST_URL="..." UPSTASH_REDIS_REST_TOKEN="..." FCM_SERVER_KEY="..."
+```
+
+4) Deploy
+
+```bash
+fly deploy
+```
+
+## Android integration notes
+
+- Call `POST /device/register` on app install/login with the FCM device token.
+- Fetch the current plan from `GET /scan/latest` to render widget/app state.
+- Trigger an on-demand scan from privileged client only via `POST /scan/run` with `X-API-KEY`.
+
+## Redis key schema (canonical)
+
+This backend writes keys exactly as specified in the project requirements, including:
+- `m:<PRODUCT_ID>:lastPrice`, `m:<PRODUCT_ID>:spreadBps`, `c:<PRODUCT_ID>:1h`, `scan:latest`, `devices:tokens`, etc.
